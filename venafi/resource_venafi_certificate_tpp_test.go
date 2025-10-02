@@ -26,6 +26,7 @@ variable "TPP_ZONE" {default = "%s"}
 variable "TPP_ZONE_ECDSA" {default = "%s"}
 variable "TRUST_BUNDLE" {default = "%s"}
 variable "TPP_ACCESS_TOKEN" {default = "%s"}
+variable "TPP_CADN" {default = "%s"}
 `,
 		os.Getenv("TPP_USER"),
 		os.Getenv("TPP_PASSWORD"),
@@ -34,6 +35,7 @@ variable "TPP_ACCESS_TOKEN" {default = "%s"}
 		os.Getenv("TPP_ZONE_ECDSA"),
 		os.Getenv("TRUST_BUNDLE"),
 		os.Getenv("TPP_ACCESS_TOKEN"),
+		os.Getenv("TPP_CADN"),
 	)
 
 	tppProvider = environmentVariables + `
@@ -115,6 +117,28 @@ output "certificate" {
 output "private_key" {
 	value = "${venafi_certificate.tpp_certificate.private_key_pem}"
 	sensitive = true
+}`
+	tppConfigCADN = `
+%s
+resource "venafi_certificate" "tpp_certificate" {
+	common_name = "%s"
+	%s
+	key_password = "%s"
+	expiration_window = %d
+}
+
+resource "venafi_certificate" "tpp_certificate_cadn" {
+	common_name = "%s"
+	%s
+	key_password = "%s"
+	expiration_window = %d
+	certificate_authority_dn = "${var.TPP_CADN}"
+}
+output "certificate_cadn" {
+	value = "${venafi_certificate.tpp_certificate.certificate_authority_dn}"
+}
+output "certificate_cadn_cadn" {
+	value = "${venafi_certificate.tpp_certificate_cadn.certificate_authority_dn}"
 }`
 	tppConfigWithNickname = `
 %s
@@ -370,6 +394,39 @@ func TestTPPSignedCert(t *testing.T) {
 							return nil
 						}
 					}
+				},
+			},
+		},
+	})
+}
+
+func TestTPPSignedCertCADN(t *testing.T) {
+	t.Parallel()
+	data := testData{}
+	rand := randSeq(9)
+	randCadn := randSeq(9)
+	domain := "venafi.example.com"
+	data.cn = rand + "." + domain
+	cnCadn := randCadn + "." + domain
+	data.private_key_password = "FooB4rNew4$x"
+	data.key_algo = rsa2048
+	data.expiration_window = 168
+	config := fmt.Sprintf(tppConfigCADN, tppTokenProviderImport, data.cn, data.key_algo, data.private_key_password, data.expiration_window, cnCadn, data.key_algo, data.private_key_password, data.expiration_window)
+	t.Logf("Testing TPP certificate with RSA key with config:\n %s", config)
+	resource.Test(t, resource.TestCase{
+		ProviderFactories: testAccProviderFactories,
+		Steps: []resource.TestStep{
+			{
+				Config: config,
+				Check: func(s *terraform.State) error {
+					t.Log("Issuing TPP certificate with CN", data.cn)
+					t.Log("Issuing TPP certificate with CN", cnCadn)
+					cadnDefault := s.RootModule().Outputs["certificate_cadn"].Value
+					cadnSelected := s.RootModule().Outputs["certificate_cadn_cadn"].Value
+					if cadnDefault == cadnSelected {
+						return fmt.Errorf("Expected different cadns")
+					}
+					return nil
 				},
 			},
 		},
